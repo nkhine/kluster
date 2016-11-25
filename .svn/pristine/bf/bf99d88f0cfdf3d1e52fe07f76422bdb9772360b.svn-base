@@ -1,0 +1,58 @@
+#!/bin/bash
+
+# by Dan Povey, March 6 2013.
+
+if [ $# -lt 2 ]; then
+   echo "Usage: add_entry <config-file> <key> <arg1> [<arg2> ... ]"
+   echo "e.g.: add_entry /var/yp/ypfiles/exports m1-01 m1-01:/data/local"
+   echo "to remove an entry, do e.g.:"
+   echo "add_entry /var/yp/ypfiles/exports m1-01 --remove"
+   echo "(note: the position of the --remove string cannot be changed from this example)"
+   exit 1;
+fi
+
+
+file=$1
+shift # so $* is the line we want to add.
+
+[ `whoami` != root ] && echo "You must run this script as root" && exit 1;
+
+lockfile-create $file || exit 1;
+trap 'lockfile-remove $file' EXIT
+
+key=$1
+
+prog=`basename $0`
+function my_logger {
+    echo $*
+    logger -t $prog $*
+}
+
+
+[ ! -f $file ] && my_logger "file $file does not exist" && exit 1;
+[ ! -w $file ] && my_logger "file $file is not writable (or you need to be root)" && exit 1
+
+awk=/usr/bin/awk
+[ ! -f $awk ] && my_logger "we require awk to be present" && exit 1;
+
+
+[ "`echo $key | $awk '{print NF}'`" != 1 ] && my_logger "Invalid key '$key'" && exit 1; # e.g. empty or has spaces.
+
+tempfile=`mktemp /tmp/tmp.XXXXXXXX` || exit 1;
+
+if [ "$2" != "--remove" ]; then
+   my_logger "adding $file entry $*"
+   echo $* > $tempfile # Put in the entry the user asked to be put in.
+else
+   my_logger "removing any entries in $file with 1st field equal to $key"
+   echo -n > $tempfile # We're just removing any matching entries.
+fi
+cat $file | $awk -v key=$key '{if ($1 != key){ print; } }' >> $tempfile
+
+cat $tempfile > $file
+chmod 644 $file
+
+rm $tempfile
+
+exit 0
+

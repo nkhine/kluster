@@ -1,0 +1,25 @@
+#!/bin/bash
+
+[ $# -ne 1 ] && \
+ ( echo "kl-create-sg.sh must be called with one argument-- the name of the"
+   echo "cluster (say, mycluster).  It will create an ec2 security group"
+   echo "with suitable permissions, with that name.  It will return with"
+   echo "successful status only if everything was OK." ) && exit 1;
+
+name="$1"
+
+! perl -e '$ARGV[0] =~ m/^[-a-zA-Z_0-9]+$/ || exit 1;' "$name" && \
+  echo "Invalid cluster name '$name'" && exit 1;
+
+echo "$0: Creating security group $name"
+ec2-create-group $name -d "Security group for cluster '$name'" || exit 1;
+
+echo "$0: Adding permissions for security group $name"
+ec2-authorize $name -P tcp -p 0-65535 -o $name  || exit 1;
+ec2-authorize $name -P udp -p 0-65535 -o $name || exit 1;
+ec2-authorize $name -P icmp -t -1:-1 -o $name || exit 1;
+ec2-authorize $name -P tcp -p 22  -s 0.0.0.0/0 || exit 1;
+
+echo "$0: Done adding permissions."
+
+exit 0;

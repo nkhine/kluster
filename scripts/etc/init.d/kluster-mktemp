@@ -1,0 +1,146 @@
+#!/bin/bash
+
+### BEGIN INIT INFO
+# Provides:          kluster-mktemp
+# Required-Start:    $all
+# Required-Stop:     $local_fs $syslog kluster-set-hostname
+# Default-Start:     2 3 4 5
+# Default-Stop:      
+# Short-Description: Mount and export local ephemeral storage
+# Description:       If /dev/xvdb (the local ephemeral storage ephemeral0) is attached,
+#                    format the disk, mount it as /mnt/local, export via NFS, and ssh
+#                    master to update exports.
+
+
+### END INIT INFO
+
+#   2012-03-06, Dan Povey writing this script
+#   Oct 2013, making modifications.
+
+prog=$(basename $0)
+
+my_logger ()
+{
+  logger -t $prog "$*"
+  echo "$prog: " "$*"
+}
+
+src="/dev/xvdb /dev/xvdc"
+
+for f in $src; do
+  if [ ! -e $f ]; then
+    my_logger "No such device $src: exiting."
+    exit 1;
+  fi
+done
+
+do_start()
+{
+  if ! pvcreate $src; then
+    my_logger "Error executing command pvcreate $src"
+    exit 1;
+  fi
+  if ! vgcreate vg1 $src; then
+    my_logger "Error executing command vgcreate vg1 $src"
+    exit 1;
+  fi
+  if ! lvcreate -l '100%FREE' -i2 -I4 -n lv1 vg1; then
+    my_logger "Error executing command lvcreate -l '100%FREE' -i2 -I4 -n lv1 vg1"
+    exit 1;
+  fi
+  device=/dev/vg1/lv1
+  if [ ! -e $device ]; then
+    my_logger "Device $device does not exist"
+    exit 1;
+  fi
+  my_logger "Formatting device $device"
+  if ! mkfs -t ext3 $device; then
+    my_logger "Failed to format device $device"
+    exit 1;
+  else
+    my_logger "Successfully formatted device $device"
+  fi
+  if ! mkdir -p /mnt/local; then
+    my_logger "Failed to create directory /mnt/local";
+    exit 1;
+  fi
+  if ! mount $device /mnt/local; then
+    my_logger "Failed to mount $device at /mnt/local"
+    exit 1;
+  fi
+  chmod a+rwx /mnt/local
+
+  if ! /sbin/add_entry /etc/exports "/mnt/local"  "*(rw,sync,no_root_squash)"; then
+    my_logger "Error modifying /etc/exports"    
+    exit 1;
+  fi
+  if ! service nfs-kernel-server reload; then
+    my_logger "Error getting nfs-kernel-server to reload."
+    exit 1;
+  fi
+  my_logger "Created and exported directory at /mnt/local."
+
+  hostname=`hostname`
+
+  # Now we want to ssh to "master" and update /etc/exports there.  Note that this
+  # will also work the same if we *are* master, we can just ssh to ourself.
+  if ! ssh master /sbin/add_entry /var/yp/ypfiles/auto.export `hostname` `hostname`:/mnt/local; then
+    my_logger "Error adding entry to auto.exports on master, see log on that machine for why."
+    exit 1;
+  fi
+
+  # it won't get propagated unless we rebuild in /var/yp on the master.
+  if ! ssh master make -C /var/yp; then
+    my_logger "Error ssh-ing to master and rebuilding YP files."
+    exit 1;
+  fi
+  my_logger "Successfully created /mnt/local and exported it."
+
+
+  if [ ! -f /mnt/local/swapfile ]; then
+      f=/mnt/local/swapfile
+      my_logger "Creating swap file in $f"
+      if ! dd if=/dev/zero of=$f bs=1024 count=4194304; then
+	  my_logger "Error creating file for swap in $f"
+	  exit 1
+      fi
+      if ! mkswap $f || ! chown root:root $f || ! chmod 0600 $f; then
+	  my_logger "Error running mkswap or changing permissions"
+	  exit 1
+      fi
+      if ! swapon $f; then
+	  my_logger "Error running swapon"
+	  exit 1
+      else
+	  my_logger "Successfully created swap file and activated swap partition"
+      fi
+  fi
+}
+
+do_stop() {
+  if ! ssh master /sbin/add_entry /var/yp/ypfiles/auto.export `hostname` --remove; then
+    my_logger "Error removing entry from auto.export on master; check log on master for details."
+    exit 1;
+  fi
+  if ! ssh master make -C /var/yp; then
+    my_logger "Error ssh-ing to master and rebuilding YP files."
+    exit 1;
+  fi
+  my_logger "Successfully removed auto.export entry on master."
+}
+
+case "$1" in
+  start)
+	do_start
+	;;
+  stop)
+	do_stop
+	;;
+  restart)
+    do_stop
+    do_start
+    ;;
+  *)
+	echo "Usage: /etc/init.d/kluster-mktemp (start|stop|restart)"
+	exit 1
+esac

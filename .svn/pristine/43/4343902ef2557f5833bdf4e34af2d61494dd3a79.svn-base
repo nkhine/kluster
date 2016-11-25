@@ -1,0 +1,33 @@
+#!/bin/bash
+# This is to be sourced.
+
+# note: you can sometimes set JAVA_HOME as follows.
+# export JAVA_HOME=`/usr/libexec/java_home`
+
+for var in EC2_HOME JAVA_HOME KLUSTER_HOME PATH AWS_ACCESS_KEY AWS_SECRET_KEY; do
+  eval '[ -z "${'$var'}" ]' && echo "Variable $var" is not set && exit 1;
+done
+
+if [ ! -d $EC2_HOME/bin ]; then
+  echo "Your EC2_HOME variable is not set correctly: no such directory $EC2_HOME/bin"
+  exit 1;
+fi
+if [ ! -d $JAVA_HOME/bin ]; then
+  echo "Your JAVA_HOME variable is not set correctly: no such directory $JAVA_HOME/bin"
+  exit 1;
+fi
+if [ ! -d $KLUSTER_HOME/bin ]; then
+  echo "Your KLUSTER_HOME variable is not set correctly: no such directory $KLUSTER_HOME/bin"
+  exit 1;
+fi
+
+! which perl >&/dev/null && \
+  echo "Error: the cluster tools require Perl to be installed and on your path." && exit 1;
+
+! which awk >&/dev/null && \
+  echo "Error: the cluster tools require awk to be installed and on your path." && exit 1;
+
+true
+
+#export PATH=$PATH:$KLUSTER_HOME/utils:$KLUSTER_HOME/bin:$EC2_HOME/bin
+

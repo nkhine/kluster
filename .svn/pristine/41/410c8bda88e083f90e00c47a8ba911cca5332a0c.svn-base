@@ -1,0 +1,80 @@
+#!/bin/bash
+
+[ $# -lt 1 ] || [ $# -gt 2 ] && \
+  ( echo "Usage: kl-check-ssh.sh <instance-id> [admin|setup]"
+    echo "e.g.: kl-check-ssh.sh i-eac43218b"
+    echo "This program waits until we can ssh to the instance, and then returns with"
+    echo "status 0.  If it is taking too long to become accessible, it returns with"
+    echo "status 1.  Ssh as root user unless another user specified as final argument."
+    echo "Pass setup to edit /root/.ssh/authorized_keys to allow root login." 
+) && exit 1;
+
+[ -z "$KL_NAME" ] && echo "Variable KL_NAME not defined" && exit 1;
+instance=$1 # e.g. "i-eac43218b"
+sshuser=$2"" # e.g. "admin"
+if [ -z "$sshuser" ]; then sshuser="root" ; fi
+
+# common ssh options.
+ssh_opts="-o LogLevel=quiet -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no"
+num_tries=100
+seconds_per_try=2
+program=`basename $0`
+
+! tmpf=`mktemp /tmp/tmp.XXXXXXXXX` && echo "$program: error making temporary file" && exit 1;
+
+
+ssh_private_key=~/.ssh/$KL_NAME.pem
+if [ ! -r $ssh_private_key ]; then
+  echo "$program: ssh private key for this cluster does not exist or is not readable: $ssh_private_key"
+  exit 1
+fi
+
+ unset public_ip
+  if [ -z $public_ip ]; then
+    ! ec2din $instance >$tmpf && \
+      ( echo "$program: error getting instance information for instance $instance:"
+       cat $tmpf ) && exit 1;
+    [ ! -s $tmpf ] && echo "$program: ec2din request produced empty output" && exit 1;
+    public_ip=`grep '^INSTANCE' $tmpf | cut -f 17`
+  fi
+if [[ "$sshuser" == "setup" ]]; then
+ sshuser="admin"
+ ssh -i $ssh_private_key $sshuser@$public_ip <<'EOF'
+sudo su 
+sed -i 's/,command=.*\bssh-rsa\b/ ssh-rsa/g' /root/.ssh/authorized_keys
+EOF
+ if [ $? -eq 0 ]  ; then
+  echo "[ok]"
+  rm $tmpf
+  exit 0
+ else
+  echo "$program: unable to edit $instance:/root/.ssh/authorized_keys"
+  exit 1
+ fi
+fi
+
+echo -n "$program: checking we can ssh to $instance "
+# using the public IP is slightly faster than using its fqdn, as no DNS request.
+unset public_ip
+for try in `seq $num_tries`; do 
+  if [ -z $public_ip ]; then
+    ! ec2din $instance >$tmpf && \
+      ( echo "$program: error getting instance information for instance $instance:"
+       cat $tmpf ) && exit 1;
+    [ ! -s $tmpf ] && echo "$program: ec2din request produced empty output" && exit 1;
+    public_ip=`grep '^INSTANCE' $tmpf | cut -f 17`
+  fi
+  if [ -z "$public_ip" ]; then # $public_ip is the empty string or unset.
+    sleep $seconds_per_try;
+  else
+   if ssh -i $ssh_private_key $ssh_opts -o ConnectTimeout=$seconds_per_try $sshuser@$public_ip true; then
+    echo "[ok]"
+    rm $tmpf
+    exit 0;
+   fi
+  fi
+  echo -n .
+done
+echo " failed to ssh to instance $instance.  Instance details:"
+cat $tmpf
+exit 1;

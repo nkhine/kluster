@@ -1,0 +1,7 @@
+# How I logged these configuration parameters:
+qconf -sc > sc
+qconf -sconf > sconf
+qconf -sq all.q > sq_all.q
+qconf -sp smp > sp_smp
+qconf -ssconf > ssconf
+

@@ -1,0 +1,33 @@
+#!/bin/bash
+
+[ $# -ne 2 ] && \
+ ( echo "Usage:"
+   echo "kl-run-master.sh <cluster-name> <ami-name> <
+   echo "cluster-config is a bash shell-script file to be sourced, that"
+   echo "sets variables like"
+   echo "KLUSTER_MASTER_IMAGE=ami-aec43blah"
+   echo "KLUSTER_NODE_IMAGE=ami-bcd55lah"
+   echo "KLUSTER_MASTER_TYPE=c1.large"
+   echo "KLUSTER_NODE_TYPE=c1.large"
+
+   echo "cluster (say, mycluster).  It will create an ec2 security group"
+   echo "with suitable permissions, with that name.  It will return with"
+   echo "successful status only if everything was OK." ) && exit 1;
+
+name="$1"
+
+! perl -e '$ARGV[0] =~ m/^[-a-zA-Z_0-9]+$/ || exit 1;' "$name" && \
+  echo "Invalid cluster name '$name'" && exit 1;
+
+echo "*kluster: Creating security group $name"
+ec2-create-group $name -d "Security group for cluster '$name'" || exit 1;
+
+echo "*kluster: Adding permissions for security group $name"
+ec2-authorize $name -P tcp -p 0-65535 -o $name  || exit 1;
+ec2-authorize $name -P udp -p 0-65535 -o $name || exit 1;
+ec2-authorize $name -P icmp -t -1:-1 -o $name || exit 1;
+ec2-authorize $name -P tcp -p 22  -s 0.0.0.0/0 || exit 1;
+
+echo "*kluster: Done adding permissions."
+
+exit 0;

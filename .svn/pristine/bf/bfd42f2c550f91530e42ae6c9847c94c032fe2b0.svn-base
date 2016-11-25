@@ -1,0 +1,27 @@
+#!/bin/bash
+
+for var in KL_NAME KL_IMAGE KL_ZONE EC2_HOME JAVA_HOME PATH AWS_ACCESS_KEY AWS_SECRET_KEY; do
+   eval '[ -z "${'$var'}" ]' && echo "$0: Variable $var" is not set && exit 1;
+done
+  
+program=$(basename $0)
+
+if [ $# -ne 0 ]; then
+   echo "$program: Usage: kl-list-nodes"
+   exit 1;
+fi
+
+
+tempfile=`mktemp /tmp/tmp.XXXXXXXXX`
+
+! ec2din > $tempfile  && echo "$program: Error running ec2din command" && exit 1;
+
+
+# The way we list them is slightly hacky and not guaranteed to work if your node names
+# might be the same as your cluster names, but we assume the output is intende for
+# humans anyway.
+cat $tempfile | \
+   awk -v name=$KL_NAME -F'\t' '/^INSTANCE/{type=$10;state=$6} /^TAG\tinstance/{ if (state == "running") printf("% 25s % 15s % 15s\n", $5, type, $3);}' | \
+   grep ${KL_NAME}- | sed "s/${KL_NAME}-//"
+
+exit 0;

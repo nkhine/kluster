@@ -1,0 +1,55 @@
+for host in `ypcat -k hosts | grep -v localhost | awk '{print $1}'`; do
+ ssh $host apt-get install `cat /root/package_list` -y
+done
+
+for host in `ypcat -k hosts | grep -v localhost | awk '{print $1}'`; do qconf -as $host; done
+
+for host in `ypcat -k hosts | grep -v localhost | awk '{print $1}'`; do
+    ssh $host umount -l -f /usr/local
+    ssh $host grep -v usr/local /etc/fstab '>' /etc/fstab.tmp
+    ssh $host mv /etc/fstab.tmp /etc/fstab
+done
+
+for host in `ypcat -k hosts | grep -v localhost | awk '{print $1}'`; do
+  ssh $host apt-get remove -y libatlas3gf-base libatlas-dev
+done
+
+for host in `ypcat -k hosts | grep -v localhost | awk '{print $1}'`; do 
+ scp /etc/default/nfs-kernel-server $host:/etc/default/
+ ssh $host service nfs-kernel-server reload
+ echo done $host
+done
+
+for host in `ypcat -k hosts | grep -v localhost | awk '{print $1}'`; do
+    scp /var/lib/gridengine/default/common/sge_qstat  $host:/var/lib/gridengine/default/common/sge_qstat 
+done
+
+for host in c1-0{1,2,3,4,5,6,7,8,9}; do
+  ssh $host mkdir -p /data/tmp
+  ssh $host mount /dev/xvdb /data/tmp
+  echo /data/tmp    '*(rw,sync,no_root_squash)' | ssh $host  cat '>>' /etc/exports
+  ssh $host service nfs-kernel-server reload
+  echo done $host
+done
+# edit /etc/exports
+for d in /export/tmp{1,2,3,4,5,6,7,8,9}; do chmod a+rwx $d; done
+
+# give nnet jobs smaller ram_free.
+(while true; do
+  sleep 60
+  for job in `qstat -u dpovey | grep -w train | awk '{print $1}' | sort | uniq`; do
+    qalter -l 'mem_free=0.2G,ram_free=0.2G' $job
+  done                                                                                                                                       done)
+   
+for host in `ypcat -k hosts | grep -v localhost | awk '{print $1}'`; do
+  scp /etc/init.d/kluster-set-hostname /etc/init.d/nis /etc/init.d/gridengine-exec /etc/init.d/gridengine-master /etc/init.d/mem-killer /etc/init.d/kluster-configure-queue /etc/init.d/kluster-misc-tasks $host:/etc/init.d/
+  ssh $host insserv -d
+done
+
+for host in `ypcat -k hosts | grep -v localhost | awk '{print $1}'`; do
+  scp /sbin/mem-killer.pl $host:/sbin;
+  ssh $host service mem-killer restart
+done
+
+# finding nodes ready to delete:
+qhost -q | perl -ane ' if (m/^(\S+)\s+lx26/) { $name=$1; } else { if(m/\s+d\s+/ && m:BIP\s*0/0/\d+:) { print "$name "; }} '; echo

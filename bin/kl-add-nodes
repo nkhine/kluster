@@ -1,0 +1,110 @@
+#!/bin/bash
+
+for var in KL_NAME KL_IMAGE KL_ZONE EC2_HOME JAVA_HOME PATH AWS_ACCESS_KEY AWS_SECRET_KEY; do
+   eval '[ -z "${'$var'}" ]' && echo "$0: Variable $var" is not set && exit 1;
+done
+extra_args=
+
+if [ "$1" == "--extra-args" ]; then
+  extra_args=$2
+  shift; shift
+fi
+program=$(basename $0)
+
+if [ $# -lt 2 ]; then
+   echo "Usage: kl-add-nodes <node-type> <node-name1> [<node-name2> ... ]"
+   exit 1;
+fi
+
+node_type=$1
+shift
+
+for node_name in $*; do
+  [ -z $node_name ] && echo "$program: empty node name" && exit 1;
+  echo $node_name | grep _ >/dev/null && echo "$program: you cannot have underscores in your node name, use dashes." && exit 1;
+
+  din_out=`mktemp /tmp/tmp.XXXXXXXXX`
+  tempfile=`mktemp /tmp/tmp.XXXXXXXXX`
+  tempfile2=`mktemp /tmp/tmp.XXXXXXXXX`
+
+  ec2din > $din_out || exit 1;
+  trap 'rm $din_out $tempfile $tempfile2' EXIT
+
+  master_name=${KL_NAME}-master # this is the standard name we give the master.
+
+  master_idlist=`cat $din_out | grep '^TAG' | awk -v name=$master_name '{if ($5 == name){ print $3; }}'`
+
+  if [ -z "$master_idlist" ]; then
+    echo "$program: Could not find a node with name $master_name"
+    exit 1
+  fi
+
+  master_idlist_running=$(grep running $din_out | grep -E $(echo $master_idlist | sed 's: :|:') | awk '{print $2}')
+
+  ni=`echo $master_idlist_running | wc -w`
+  if [ $ni -ne 1 ]; then
+    echo "$0: found $ni instances with name $master_name in state 'running'"
+    exit 1
+  fi
+
+  master_id=$master_idlist_running
+
+  master_state=`cat $din_out | grep '^INSTANCE' | grep -w $master_id | cut -f 6`
+  [ "$master_state" != running ] && echo "$program: State '$master_state' of master is not running" && exit 1;
+  master_public_ip=`cat $din_out | grep '^INSTANCE' | grep -w $master_id | cut -f 17`
+  master_private_ip=`cat $din_out | grep '^INSTANCE' | grep -w $master_id | cut -f 18`
+
+  pem=~/.ssh/${KL_NAME}.pem
+  [ ! -f $pem ] && echo "$program: No such file $pem" && exit 1;
+  [ -z $node_name ] && echo "$program: Empty node name" && exit 1;
+  [ -z $master_public_ip ] && echo "$program: Master public IP is empty" && exit 1;
+  [ -z $master_private_ip ] && echo "$program: Master private IP is empty" && exit 1;
+
+  if grep '^TAG' $din_out | grep -w ${KL_NAME}-${node_name}; then # node with this name might exist.
+    echo "$program: Warning: node with name ${KL_NAME}-${node_name} seems to exist."
+    echo "$program: Please check what's happening, and press enter to continue, or ctrl-c to cancel." 
+    read
+  fi
+
+  if [ "$node_type" == "g2.2xlarge" ] || [ "$node_type" == "g2.8xlarge" ]; then
+    [ -z "$KL_GPU_IMAGE" ] && echo "KL_GPU_IMAGE not set" && exit 1
+    IMAGE=$KL_GPU_IMAGE
+  else
+    IMAGE=$KL_IMAGE
+  fi
+  
+  cat >$tempfile <<EOF
+#hostname $node_name
+#hosts_entry $master_private_ip master
+EOF
+	if [ -z $KL_NETWORK ]; then
+  cmd="ec2run $IMAGE -g $KL_NAME -k $KL_NAME -z $KL_ZONE -t $node_type --user-data-file $tempfile  --instance-initiated-shutdown-behavior terminate $extra_args"
+	else
+  cmd="ec2run $IMAGE -k $KL_NAME -z $KL_ZONE -t $node_type --user-data-file $tempfile -a $KL_NETWORK  --instance-initiated-shutdown-behavior terminate $extra_args"
+	fi
+  echo "$program: Running command $cmd"
+  if ! $cmd > $tempfile2; then
+    echo "$program: Error creating node, output was: "
+    cat $tempfile2
+    exit 1
+  else
+    echo "$program: Created node."
+  fi
+  node_id=`grep '^INSTANCE' $tempfile2 | awk '{print $2}'`
+  [ -z $node_id ] && echo "$program: error getting node id" && exit 1;
+
+  if ! ec2tag $node_id --tag Name=${KL_NAME}-${node_name}; then
+    echo "$program: Error tagging node: trying again after a delay"
+    sleep 15
+    if ! ec2tag $node_id --tag Name=${KL_NAME}-${node_name}; then
+      echo "$program: Error tagging node the second time"
+      exit 1;
+    else
+      echo "$program: tagging node succeeded the second time."
+    fi
+  fi
+  sleep 15; # Sleep a little bit before adding the next node, as this reduces
+  # potential confusion.
+done
+
+exit 0;

@@ -1,0 +1,23 @@
+#!/bin/bash
+
+[ $# -ne 1 ] && \
+  ( echo "kl-delete-key.sh must be called with one argument-- the name of the"
+  echo "cluster (say, mycluster).  It will delete the key-pair with that name,"
+  echo "and the files ~/.ssh/mycluster.{pem,pub}."
+  ) && exit 1;
+
+! . kl-check-vars && echo "$0: error checking required shell variables" && exit 1;
+
+name="$1"
+
+! perl -e '$ARGV[0] =~ m/^[-a-zA-Z_0-9]+$/ || exit 1;' "$name" && \
+  echo "$0: invalid cluster name '$name'" && exit 1;
+
+[[ ! -d ~/.ssh || ! -w ~/.ssh ]] && \
+  echo "$0: Your .ssh directory does not exist or is not writable" && exit 1;
+
+rm ~/.ssh/$name.{pem,pub} >&/dev/null
+
+ec2-delete-keypair $name
+
+exit 0;

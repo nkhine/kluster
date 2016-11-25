@@ -1,0 +1,28 @@
+#!/bin/bash
+
+for var in KL_NAME KL_IMAGE KL_ZONE EC2_HOME JAVA_HOME PATH AWS_ACCESS_KEY AWS_SECRET_KEY; do
+   eval '[ -z "${'$var'}" ]' && echo "$0: Variable $var" is not set && exit 1;
+done
+
+if [ $# == 0 ]; then
+   echo "$0: Usage: kl-remove-nodes <node-name1> ... "
+   exit 1;
+fi
+
+
+din_out=`mktemp /tmp/tmp.XXXXXXXXX`
+trap 'rm $din_out $tempfile $tempfile2' EXIT
+ec2din > $din_out || exit 1;
+
+for node_name in $*; do
+  node_tag=${KL_NAME}-${node_name} # e.g. mycluster-c1-01
+  node_id=`cat $din_out | grep '^TAG' | awk -v name=$node_tag '{if ($5 == name){ print $3; }}' | tail -1`
+  if [ -z $node_id ]; then
+    echo "$0: Could not find a node with name $node_name";
+  else 
+    echo "Running command: ec2kill $node_id"
+    ec2kill $node_id
+  fi
+done
+
+exit 0;

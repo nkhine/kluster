@@ -1,0 +1,71 @@
+#!/bin/bash
+
+for var in KL_NAME KL_IMAGE KL_ZONE EC2_HOME JAVA_HOME PATH AWS_ACCESS_KEY AWS_SECRET_KEY; do
+   eval '[ -z "${'$var'}" ]' && echo "$0: Variable $var" is not set && exit 1;
+done
+
+[ $# -ne 1 ] && \
+ ( echo "Usage: kl-run-master <master-node-type>"
+   echo "e.g.: kl-run-master m1.large" ) && exit 1;
+
+node_type=$1
+tempfile=`mktemp /tmp/tmp.XXXXXXXXX`
+
+! ec2-describe-group  $KL_NAME >& /dev/null && \
+   echo "No such security group $KL_NAME: run kl-create-sg $KL_NAME" && exit 1;
+
+! ec2-describe-keypairs | grep -w $KL_NAME >& /dev/null && \
+  echo "No such keypair $KL_NAME: run kl-create-key $KL_NAME" && exit 1;
+
+if [ "$node_type" == "g2.2xlarge" ] || [ "$node_type" == "g2.8xlarge" ]; then
+  [ -z "$KL_GPU_IMAGE" ] && echo "KL_GPU_IMAGE not set" && exit 1
+  IMAGE=$KL_GPU_IMAGE
+else
+  IMAGE=$KL_IMAGE
+fi
+
+ec2-describe-instances | \
+   awk -F'\t' '/^INSTANCE/{ instance=$2; state=$6 } /^TAG\tinstance/ { 
+   tag=$5; if ($3 == instance && state != "terminated" && $4 == "Name") { print tag; }}' | \
+ grep -w "${KL_NAME}-master" >/dev/null && \
+ echo "$0: instance already exists with name ${KL_NAME}-master" && exit 1;
+
+if [ -z $KL_NETWORK ]; then
+cmd="ec2-run-instances $IMAGE -g $KL_NAME -k $KL_NAME -z $KL_ZONE -t $node_type "
+else
+cmd="ec2-run-instances $IMAGE -k $KL_NAME -z $KL_ZONE -t $node_type -a $KL_NETWORK"
+fi
+
+echo "$0: Creating master instance with command '$cmd'"
+! $cmd > $tempfile && echo "$0: Error creating master instance" && exit 1;
+
+master_instance=`grep '^INSTANCE' $tempfile | awk '{print $2}'` || exit;
+[ -z "$master_instance" ] && echo "$0: Error getting master instance name" && exit 1;
+
+sleep 1;
+echo "$0: Attaching name ${KL_NAME}-master to instance..."
+if ! ec2-create-tags $master_instance --tag Name=${KL_NAME}-master; then
+  echo "$0: tag command 'ec2-create-tags $master_instance --tag Name=${KL_NAME}-master' failed, re-trying."
+  sleep 15;
+  if ! ec2-create-tags $master_instance --tag Name=${KL_NAME}-master; then
+    echo "$0: tag command failed a second time, trying once more."
+    sleep 15;
+    if ! ec2-create-tags $master_instance --tag Name=${KL_NAME}-master; then
+      echo "$0: tag command failed a third time."
+      exit 1;
+    fi
+  else
+    echo "$0: tag command succeeded the second time."
+  fi
+fi
+
+! kl-check-ssh $master_instance && \
+  echo "$0: unable to ssh to instance as root"
+  echo "You may need to wait for AWS to finish creating the instance... "
+  echo "To check ssh connectivity, run: kl-check-ssh $master_instance" && exit 1;
+
+echo "$0: Successfully created master instance."
+
+rm $tmpfile
+
+exit 0;

@@ -1,0 +1,25 @@
+#!/bin/bash                                                                                                                                                         
+
+if [ $(whoami) != root ]; then
+   echo Please run this script as root
+   exit 1;
+fi
+
+for m in $*; do
+    (
+       qmod -d all.q@$m
+       while true; do
+         nl=$(qstat | grep $m | wc -l)
+         if [ $nl == 0 ]; then
+           echo Shutting down $m
+           ssh $m shutdown -h now
+           exit 0 # exit from this sub-shell.                                                                                                                       
+         fi
+         sleep 10
+       done
+    ) &
+
+done
+
+wait
+

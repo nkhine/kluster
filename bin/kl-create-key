@@ -1,0 +1,41 @@
+#!/bin/bash
+
+[ $# -ne 1 ] && \
+  ( echo "kl-create-key.sh must be called with one argument-- the name of the"
+  echo "cluster (say, mycluster).  It will create a key-pair with that name,"
+  echo "put it in e.g. ~/.ssh/mycluster.{pem,pub}.  It will return with successful status only "
+  echo "if everything was OK." ) && exit 1;
+
+name="$1"
+
+! perl -e '$ARGV[0] =~ m/^[-a-zA-Z_0-9]+$/ || exit 1;' "$name" && \
+  echo "$0: invalid cluster name '$name'" && exit 1;
+
+[[ ! -d ~/.ssh || ! -w ~/.ssh ]] && \
+  echo "$0: Your .ssh directory does not exist or is not writable" && exit 1;
+[[ -f ~/.ssh/$name.pem ]] && \
+  ( echo "$0: You already have a file ~/.ssh/$name.pem.  Either delete the cluster"
+  echo "using kl-delete-cluster.sh, or remove the file manually." ) && exit 1;
+ec2-describe-keypairs $name >&/dev/null  # should exit with status 1 because
+  # no such keypair.
+[ $? -ne 1 ] && \
+  ( echo "$0: You already have a key named $name.  Either delete the cluster"
+    echo "using kl-delete-cluster.sh, or remove it with 'ec2delkey $name'" ) && exit 1;
+  
+
+echo "$0: creating key-pair with name $name, in ~/.ssh/$name.pem"
+ec2-add-keypair $name | tail -n +2 > ~/.ssh/$name.pem
+# Check that it worked.
+if [ ! -s ~/.ssh/$name.pem ] || ! ec2-describe-keypairs $name >&/dev/null; then
+  echo "Error creating keypair with name $name, command was ec2-add-keypair $name"
+  exit 1
+fi
+chmod 600 ~/.ssh/$name.pem
+
+echo "$0: creating public key in ~/.ssh/$name.pub"
+! ssh-keygen -f ~/.ssh/$name.pem -y > ~/.ssh/$name.pub && \
+  echo "$0: error generating public key" && exit 1
+
+echo "$0: done creating ssh key"
+
+exit 0;

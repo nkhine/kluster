@@ -1,0 +1,35 @@
+#!/bin/bash
+
+for var in KL_NAME KL_IMAGE KL_ZONE EC2_HOME JAVA_HOME PATH AWS_ACCESS_KEY AWS_SECRET_KEY; do
+   eval '[ -z "${'$var'}" ]' && echo "$0: Variable $var" is not set && exit 1;
+done
+
+[ $# -ne 0 ] && \
+  echo "Usage: kl-sshmaster [no arguments]"  && exit 1;
+
+tempfile=`mktemp /tmp/tmp.XXXXXXX` || exit 1;
+
+trap 'rm $tempfile' EXIT
+
+! ec2din > $tempfile  && echo "Error running ec2din" && exit 1;
+
+! line=`cat $tempfile | awk -F'\t' '/^INSTANCE/{ instance=$2; state=$6 } /^TAG\tinstance/ { 
+    tag=$5; if ($3 == instance && state != "terminated" && $4 == "Name") { print; }}' | \
+    grep -w "${KL_NAME}-master"` && \
+      echo "$0: instance does not seem to exist with name ${KL_NAME}-master" && exit 1;
+
+instance=$(echo $line | awk '{print $3}')
+
+echo "instance is $instance"
+
+! public_ip=$(cat $tempfile | grep '^INSTANCE' | grep $instance | cut -f 17) && \
+  echo "$0: error getting public IP for instance $instance" && exit 1;
+
+[ -z "$public_ip" ] && \
+    echo "$0: error getting public IP for instance $instance (result is empty)" && exit 1;
+
+# The following line is what this script does.
+echo "running:" ssh -i ~/.ssh/${KL_NAME}.pem root@$public_ip
+
+exec ssh -i ~/.ssh/${KL_NAME}.pem root@$public_ip
+

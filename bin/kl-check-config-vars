@@ -1,0 +1,17 @@
+#!/bin/bash
+# This is to be sourced.
+
+# note: you can sometimes set JAVA_HOME as follows.
+# export JAVA_HOME=`/usr/libexec/java_home`
+
+for var in KL_IMAGE KL_MASTER_TYPE KL_NODE_TYPE KL_ZONE; do
+  eval '[ -z "${'$var'}" ]' && echo "$0: Variable $var" is not set && exit 1;
+done
+
+
+if [[ "$KL_PARANOID" != true && "$KL_PARANOID" != false ]]; then
+  echo "The variable KL_PARANOID should be set to true or false."
+  exit 1;
+fi
+
+true

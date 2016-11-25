@@ -1,0 +1,72 @@
+#!/bin/bash
+
+### BEGIN INIT INFO
+# Provides:          kluster-misc-tasks
+# Required-Start:    kluster-configure-queue
+# Required-Stop:     kluster-configure-queue
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: If we're not the master, copies certain scripts from the
+#                    master for misc startup and shutdown tasks that were not configured
+#                    when we created the image.
+# Description:       If we are not the master, at startup copies all files in /etc/kluster-start.d/
+#                    from master and runs the ones ending in *.sh that are executable.
+#                    At shutdown does the same for /etc/kluster-stop.d/
+
+### END INIT INFO
+
+#
+# History:
+#   2012-03-07, Dan Povey adapting it from the 
+#     kluster-configure-queue script
+#
+
+prog=$(basename $0)
+logger="logger -t $prog"
+
+
+do_start()
+{
+  hostname=`hostname`
+  if [ "$hostname" == master ]; then
+    return # nothing to do if we are the master.
+  fi
+  scp -r master:/etc/kluster-start.d /etc/
+  for i in /etc/kluster-start.d/*.sh; do
+    if [ -x $i ]; then
+      logger "Executing program $i"
+      $i
+    fi
+  done
+}
+
+do_stop()
+{
+  hostname=`hostname`
+  if [ "$hostname" == master ]; then
+    return # nothing to do if we are the master.
+  fi
+  scp -r master:/etc/kluster-stop.d /etc/
+  for i in /etc/kluster-stop.d/*.sh; do
+    if [ -x $i ]; then
+      $logger "Executing program $i"
+      $i
+    fi
+  done
+}
+
+case "$1" in
+  start)
+	do_start
+	;;
+  stop)
+	do_stop
+	;;
+  restart)
+	do_stop
+    do_start
+	;;
+  *)
+	echo "Usage: /etc/init.d/kluster-misc-tasks {start|stop|restart}"
+	exit 1
+esac

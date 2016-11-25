@@ -1,0 +1,27 @@
+# to add a user:
+# (this assumes you know a little about UNIX).
+edit /var/yp/ypfiles/passwd
+edit /var/yp/ypfiles/group
+cd /var/yp
+make
+
+edit /var/yp/ypfiles/auto.home  # e.g. add "dpovey m1-02:/data/home1/dpovey"
+
+# e.g. of adding:
+user=sanjeev
+host=m1-02
+dir=home3
+
+on m1-02:
+ssh $host cp -r -T /etc/skel /data/$dir/$user
+ssh $host chown -R $user:$user /data/$dir/$user
+echo $user $host:/data/$dir/$user >> /var/yp/ypfiles/auto.home
+
+# set password.
+yppasswd dpovey
+[you need to have the root password set up for this to work.]
+
+on m1-01:
+cp -r -T /etc/skel /data/home2/jtrmal
+chown -R jtrmal:jtrmal /data/home2/jtrmal
+

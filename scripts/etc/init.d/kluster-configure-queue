@@ -1,0 +1,136 @@
+#!/bin/bash
+
+### BEGIN INIT INFO
+# Provides:          kluster-configure-queue
+# Required-Start:    sge_master kluster-set-hostname
+# Required-Stop:     sge_master kluster-set-hostname
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Adds the current host as administrator, exec host and submit host, with correct setup.
+# Description:       If this is the master, this script sets up the exec-host configuration,
+#                    which will keep one CPU free but allocate the rest to computation.
+#                    If this is not the master, it will ssh to the master to accomplish the same thing.
+#                    In either case, it adds the host as administrator, exec host and submit host,
+#                    and will set it up with suitable values for num_slots (will be same as # virtual cpus),
+#                    and ram_free which will be the amount of physical memory.
+#                    On shutdown, if not on the master it will remove the current host from the queue.
+
+### END INIT INFO
+
+#
+# History:
+#   2012-03-06, Dan Povey adapting it from the 
+#     kluster-set-hostname script
+#
+
+prog=$(basename $0)
+logger="logger -t $prog"
+
+
+do_start()
+{
+  ssh master lockfile -l 10 /tmp/queue.lock # multiple machines doing this at
+                                            # the same time can cause problems,
+                                            # so lock others out.
+  hostname=`hostname`
+
+  if [ "$hostname" == master ]; then
+    reserved_mb=1000 # Reserve 1G on the master for various daemons, don't donate it to queue.
+    reserved_cpus=1
+  else
+    reserved_mb=100 # for the OS.
+    reserved_cpus=0
+  fi
+
+  num_cpus=`grep -w processor /proc/cpuinfo | wc -l`
+  num_cpus=$[$num_cpus-$reserved_cpus] # Leave one free to run various other things.
+  [ $num_cpus -lt 0 ] && num_cpus=0
+
+  for n in `seq 3`; do
+    output=$(ssh master qconf -ah $hostname)
+    ret=$?
+    $logger "Added current host as admin host on the queue, try $n, status is $ret, output is $output"
+    [ $ret -eq 0 ] && break;
+    sleep 5; # do this 3 times in case it fails-- I think it can fail sometimes for unknown reasons.
+  done
+  
+  output=$(qconf -as $hostname)  # add it as a submit host.
+  $logger "Did qconf -as $hostname, exit status is $?, output is $output"
+  
+  ! mem=`cat /proc/meminfo | awk -v reserved_mb=$reserved_mb 'match($1,"MemTotal") == 1 { mb_free = $2/1000 - reserved_mb;
+    if (mb_free < 1) { mb_free = 1 } printf("%dM", mb_free);}'` && \
+      $logger "error finding out how much memory is free." && exit 0;
+  tempfile=`mktemp`
+cat <<EOF > $tempfile
+hostname              $hostname
+load_scaling          NONE
+complex_values        ram_free=$mem
+user_lists            NONE
+xuser_lists           NONE
+projects              NONE
+xprojects             NONE
+usage_scaling         NONE
+report_variables      NONE
+EOF
+  # Add (a) execution host (e) from file (capitalize-the-A).
+  if output=$(qconf -Ae $tempfile); then
+    $logger "Successfully added $hostname on try $n to the queue with num-slots=$num_cpus and ram_free=$mem"  
+  else
+    $logger "Problem adding $hostname to the queue, output is: '$output'"
+  fi
+  rm $tempfile
+  output=$(qconf -aattr hostgroup hostlist $hostname @allhosts) # make sure we're in @allhosts
+  $logger "Added $hostname to @allhosts, exit status is $?, output is $output"
+  output=$(qconf -aattr queue slots "[$hostname=$num_cpus]" all.q)
+  $logger "Modified slots, exit status is $?, output is $output"
+
+  # Note: we could have changed the mem with:
+  # qconf -aattr exechost complex_values ram_free=$mem $hostname
+  ssh master rm /tmp/queue.lock
+}
+
+do_stop()
+{
+  ssh master lockfile -l 10 /tmp/queue.lock # multiple machines doing this at
+                                            # the same time can cause problems,
+                                            # so lock others out.
+
+  hostname=`hostname`
+  if [ "$hostname" != master ]; then
+    # Remove this host from the queue... 
+    bad=false
+    ssh master qconf -dattr hostgroup hostlist $hostname @allhosts || bad=true # remove from @allhosts
+    ssh master qconf -de $hostname || bad=true # remove as exec host
+    ssh master qconf -dh $hostname || bad=true # remove as admin host
+    if $bad; then
+      $logger "Successfully removed this host $hostname from the queue"
+    else
+      $logger "Something went wrong removing this host $hostname from.."
+      $logger "..the queue (ignore this error if part of startup)"
+    fi
+  else
+    # Master is shutting down-> remove everything from queue.
+    for host in `qconf -sel`; do qconf -de $host; done
+  fi
+  ssh master rm /tmp/queue.lock
+}
+
+case "$1" in
+  start)
+    # We do the stop stuff first even if we were just asked to start,
+    # because there are certain situations where this can cause it to succeed
+    # where it otherwise would have failed.
+    do_stop 
+	do_start
+	;;
+  stop)
+	do_stop
+	;;
+  restart)
+	do_stop
+    do_start
+	;;
+  *)
+	echo "Usage: /etc/init.d/kluster-configure-queue {start|stop|restart}"
+	exit 1
+esac

@@ -1,0 +1,166 @@
+#!/bin/bash
+
+### BEGIN INIT INFO
+# Provides:          kluster-set-hostname
+# Required-Start:    $network $local_fs $syslog cloud-config
+# Required-Stop:     $network $local_fs $syslog
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Get hostname from EC2 user data, and do related things (this script specialized for "kluster" setup)
+# Description:       When EC2 instance is booted, looks for a line like '#hostname some_hostname'
+#                    in ec2 user data, and sets hostname to 'some_hostname'.  Also if it sees a 
+#                    line like '#hosts_entry <blah>", puts <blah> as an entry in the "hosts" file
+#                    and removes any enty that conflicts with it (i.e. same 2nd field.)  If we are not the master,
+#                    we ssh to the master and add our own hostname in /var/yp/ypfiles/hosts on startup, and remove
+#                    that entry on shutdown.
+
+### END INIT INFO
+
+# kluster-set-hostname - Set hostname based on ec2 user data, if the script 
+# starts with a # and if we see a line like #hostname some_hostname
+# in the script.  If the user-data is empty, put a line in /etc/hosts
+# with this machine's IP address as reported by 'ifconfig', as just "master".
+#
+# History:
+#   2015-06-04, Carl Pupa updated for debian 7 
+#     to allow root ssh login.
+#
+#   2012-03-06, Dan Povey adapting it from the 
+#     ec2-run-user-data script.
+#
+#   2011-03-25 Eric Hammond <ehammond@thinksome.com>
+#   - Add LSB info to support update-rc.d
+#   - Improve check for compressed user-data
+#
+#   2010-01-07 Tom White
+#   - Add support for gzip-compressed user data
+#
+#   2008-05-16 Eric Hammond <ehammond@thinksome.com>
+#   - Initial version including code from Kim Scheibel, Jorge Oliveira
+#
+prog=$(basename $0)
+logger="logger -t $prog"
+curl="curl --retry 3 --silent --show-error --fail"
+instance_data_url=http://169.254.169.254/2008-02-01
+
+[ ! -f /sbin/add_hosts_entry ] && \
+   echo "We require the program /sbin/add_hosts_entry" && exit 1;
+
+do_start()
+{
+# Wait until meta-data is available.
+  export LC_ALL=C
+  perl -MIO::Socket::INET -e '
+ until(new IO::Socket::INET("169.254.169.254:80")){print"Waiting for meta-data...\n";sleep 1}
+' | $logger
+
+# Retrieve the instance user-data and read it in if it starts with a '#'
+  user_data_file=$(tempfile --prefix ec2 --suffix .user-data --mode 700)
+  $logger "Retrieving user-data"
+  $curl -o $user_data_file $instance_data_url/user-data 2>&1 | $logger
+
+  my_ip=`ifconfig | grep 'inet addr' | grep -v 127.0.0.1 | sed 's/inet addr://' | awk '{print $1'}`
+
+
+  if [ ! -s $user_data_file ]; then
+  # we are the master.   No user-data.
+    $logger "(setting hostname) No user-data available, setting hostname to 'master' and modifying /etc/hosts"
+    hostname=master
+    hostname $hostname
+  # Put a line with "<my-ip> master" in /etc/hosts.  This seems to be necessary
+  # for GridEngine to work correctly, it's kind of picky.
+
+    echo $hostname > /etc/hostname
+    if ! add_hosts_entry /etc/hosts $my_ip master; then
+      $logger "Error setting hostname of master"
+    fi
+  elif [ `head -c 1 $user_data_file` != '#' ]; then
+    $logger "(setting hostname) Skipping user-data as it does not begin with #!"
+  else
+    # non-master.
+    $logger "Trying to set hostname from user-data"
+    line=`cat $user_data_file | grep '^#hostname' | head -1`
+
+    if [ "$line" != "" ] && [ `echo $line | wc -w` -eq 2 ]; then
+      hostname=`echo $line | awk '{print $2}'`
+      $logger "Hostname taken from user-data is $hostname"
+      hostname $hostname
+      echo $hostname > /etc/hostname      
+    else
+      $logger "Could not find a hostname in user-data file: bad line '$line'"
+      exit 0; # rules on exit status of init scripts are confusing, apparently.
+    fi  
+    
+    $logger "Looking for '/etc/hosts' entries in user-data"
+    grep '^#hosts_entry' $user_data_file | while read line; do
+      line=`echo $line | awk '{for (n=2; n<=NF; n++) printf("%s ", $n);}'`
+      add_hosts_entry /etc/hosts $line # this will produce log messages itself.
+    done
+
+    if ! master=`ssh master hostname`; then
+      $logger "Error connecting via ssh to master to get its hostname"
+      return 0;
+    fi
+    if [ "$master" != "master" ]; then
+      $logger "Error getting hostname from master: it says it is '$master'."
+      $logger "***Not continuing with this script.  Something went wrong (wrong master IP specified in userdata?)***"
+      return 0;
+    fi
+    # At this point, "master" should probably an entry in our own /etc/hosts,
+    # since it should have been in a line like '#hosts_entry 123.24.64.101 master',
+    # so we should be able to ssh there and add our own IP and hostname to
+    # /etc/hosts there, so it will be transmitted to everyone
+    # via YP/NIS.
+    if ssh master add_hosts_entry /etc/hosts $my_ip $hostname; then
+      $logger "Added hosts entry '$my_ip $hostname' to /etc/hosts on master"
+    else
+      $logger "Something went wrong updating /etc/hosts on master."
+    fi
+  fi
+  sleep 3 # Since this doesn't always seem to become available immediately, it's safer
+          # if we wait a little bit after adding the entry in /etc/hosts.
+  rm -f $user_data_file
+
+  # remove command from /root/.ssh/authorized_keys that prevents root ssh logins
+  sed -i 's/,command=.*\bssh-rsa\b/ ssh-rsa/g' /root/.ssh/authorized_keys
+}
+
+do_stop()
+{
+  if [ `hostname` != master ]; then
+    # If we are not the master, remove our own hostname from /var/yp/ypfiles/hosts on master.
+    if ssh master add_hosts_entry /etc/hosts --remove `hostname`; then
+      $logger "Removed our own hosts entry `hostname` from master /etc/hosts"
+    else
+      $logger "Something went wrong removing our own hosts entry `hostname` from master /etc/hosts"
+    fi
+  else
+    # If we are the master, clean up the image by removing our own hostname from /etc/hosts
+    if add_hosts_entry /etc/hosts --remove master; then
+      $logger "Removed our own hosts entry (master) from /etc/hosts"
+    else
+      $logger "Something went wrong removing our own hosts entry (master) from /etc/hosts"
+    fi
+    if add_hosts_entry /etc/hosts 127.0.0.1 localhost localhost.localdomain; then
+      $logger "Added normal localhost entry to /etc/hosts"
+    else
+      $logger "Something went wrong adding localhost entry to /etc/hosts"
+    fi
+  fi
+}
+
+case "$1" in
+  start)
+	do_start
+	;;
+  stop)
+	do_stop
+	;;
+restart)
+    do_stop
+    do_start
+    ;;
+  *)
+	echo "Usage: /etc/init.d/kluster-set-hostname {start|stop|restart}"
+	exit 1
+esac

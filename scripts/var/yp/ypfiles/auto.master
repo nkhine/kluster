@@ -1,0 +1,2 @@
+/export auto.export     -rw,nfsvers=3,intr,rsize=8192,wsize=8192,timeo=1000,retrans=5,bg,retry=5,proto=tcp,actimeo=10
+/home auto.home       -rw,nfsvers=3,intr,rsize=8192,wsize=8192,timeo=1000,retrans=5,bg,retry=5,proto=tcp,actimeo=10
